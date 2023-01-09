@@ -8,7 +8,11 @@ import {
   ValidateNested,
 } from "class-validator"
 import { defaultAdminProductFields, defaultAdminProductRelations } from "."
-import { ProductService, ProductVariantService } from "../../../../services"
+import {
+  ProductService,
+  ProductVariantInventoryService,
+  ProductVariantService,
+} from "../../../../services"
 
 import { Type } from "class-transformer"
 import { EntityManager } from "typeorm"
@@ -17,6 +21,8 @@ import {
   ProductVariantPricesCreateReq,
 } from "../../../../types/product-variant"
 import { validator } from "../../../../utils/validator"
+import { IInventoryService } from "../../../../interfaces"
+import { ProductVariant } from "../../../../models"
 
 /**
  * @oas [post] /products/{id}/variants
@@ -117,14 +123,26 @@ export default async (req, res) => {
   const productVariantService: ProductVariantService = req.scope.resolve(
     "productVariantService"
   )
+  const inventoryService: IInventoryService =
+    req.scope.resolve("inventoryService")
+  const productVariantInventoryService: ProductVariantInventoryService =
+    req.scope.resolve("productVariantInventoryService")
+
   const productService: ProductService = req.scope.resolve("productService")
 
   const manager: EntityManager = req.scope.resolve("manager")
-  await manager.transaction(async (transactionManager) => {
+  const variant = await manager.transaction(async (transactionManager) => {
     return await productVariantService
       .withTransaction(transactionManager)
       .create(id, validated as CreateProductVariantInput)
   })
+
+  if (validated.manage_inventory && inventoryService) {
+    await createAndAttachInventoryItemToVariant(validated, variant, {
+      inventoryService,
+      productVariantInventoryService,
+    })
+  }
 
   const product = await productService.retrieve(id, {
     select: defaultAdminProductFields,
@@ -132,6 +150,34 @@ export default async (req, res) => {
   })
 
   res.json({ product })
+}
+
+const createAndAttachInventoryItemToVariant = async (
+  validated: AdminPostProductsProductVariantsReq,
+  variant: ProductVariant,
+  context: {
+    inventoryService: IInventoryService
+    productVariantInventoryService: ProductVariantInventoryService
+  }
+) => {
+  const { inventoryService, productVariantInventoryService } = context
+  const inventoryItem = await inventoryService.createInventoryItem({
+    sku: validated.sku,
+    origin_country: validated.origin_country,
+    hs_code: validated.hs_code,
+    mid_code: validated.mid_code,
+    material: validated.material,
+    weight: validated.weight,
+    length: validated.length,
+    height: validated.height,
+    width: validated.width,
+  })
+
+  await productVariantInventoryService.attachInventoryItem(
+    variant.id,
+    inventoryItem.id,
+    1
+  )
 }
 
 class ProductVariantOptionReq {
